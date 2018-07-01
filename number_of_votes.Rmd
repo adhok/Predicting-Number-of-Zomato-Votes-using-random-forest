@@ -1,0 +1,307 @@
+---
+title: "A model to predict the number of Votes"
+author: "Pradeep Adhokshaja"
+date: "6/25/2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+## Problem statement
+
+In this post, we will try to build a model for getting the number of Votes for restaurants in New Delhi.
+
+
+## Libraries and Data Preparation
+
+
+In this kernel, we will try to build a model to predict the number of Votes a restaurant would get based on chosen features.In this section of the code, we remove the columns that might not be of much value to us. These include columns that talk about the location , locality and the cuisine that is served.
+
+```{r}
+
+
+library(ggplot2)
+library(tidyverse)
+
+zomato = read.csv('zomato.csv')
+
+zomato_nd = zomato %>% filter(Country.Code==1) %>% filter(City=='New Delhi')
+
+
+
+zomato_nd_predict <- zomato_nd %>% select(-Restaurant.ID,-Restaurant.Name,-Country.Code,-City,-Address,
+                                          -Locality,-Locality.Verbose,-Longitude,-Latitude,-Cuisines,-Currency,-Switch.to.order.menu)
+
+```
+
+
+
+## A look into the data
+
+Now that we have removed the variables that might not add much information to our model, let us take a look that the resulting dataset.
+
+
+
+```{r}
+
+zomato_nd_predict %>% str()
+
+
+```
+
+There seems to be three variables that point to the same thing. These are `Aggregate.rating` , `Rating.color` and `Rating.text`.
+
+Before we remove two of these, let's take a look at them.
+
+```{r}
+
+p = zomato_nd_predict %>%
+  select(Aggregate.rating,Rating.color,Rating.text) %>%
+  ggplot(aes(x=Aggregate.rating))+geom_density()+facet_grid(~Rating.color+Rating.text)
+
+ggsave(p,'variable_dustributions_number_of_votes_0.png')
+
+
+```
+
+From the above density plots we see that, `Rating.color`, `Rating.text` and the `Aggregate.rating` are related to each other. Keeping all three would not add much to the model that we are trying to build. So let's remove `Rating.text` and `Rating.color`.
+
+```{r}
+
+zomato_nd_predict <- zomato_nd_predict %>% select(-Rating.color,-Rating.text)
+
+
+```
+
+## Distributions of Variables
+
+
+Before we start building any model, we need to identify the problem we are trying to solve. The number of votes would be real valued. This would then call for building a regression model. But before that, let's  take a look at the distributions of the chosen variables.
+
+
+
+```{r}
+
+p = zomato_nd_predict %>%
+  select_if(is.numeric) %>%
+  tidyr::gather(type,value,1:4) %>%
+  ggplot(aes(x=value))+geom_histogram()+facet_grid(~type,scales = 'free')+
+  theme(panel.background = element_blank())
+ggsave(p,'variable_dustributions_number_of_votes_1.png')
+
+
+```
+
+All of the variables are highly skewed in nature. This can add biases to the regression model that we build. One way to counter this is to transform the variables so that they have a nearly normal distribution.
+
+
+
+### Data transformation
+
+
+To transform the data that have highly biased, we firstly remove the variables that are outliers.
+
+These removals include
+
+* `Aggregate.rating` that have a 0
+* All restuarants that have an average cost of two of over Rs2000
+
+
+
+
+
+```{r}
+
+
+p= zomato_nd_predict%>%
+  select_if(is.numeric) %>%
+  filter(Aggregate.rating>2,Average.Cost.for.two<2000) %>%
+  #mutate(Average.Cost.for.two=log(Average.Cost.for.two+0.001),Votes=log(Votes)) %>%
+  tidyr::gather(type,value,1:4) %>%
+  ggplot(aes(x=value))+geom_histogram()+facet_grid(~type,scales = 'free')
+
+ggsave(p,'variable_dustributions_number_of_votes_2.png')
+
+```
+
+
+There is a slight change in the distributions. But we can do more. The variable responsible for the average cost for two, is still a little bit skewed. On way way to curb this would be to use the log transformation. Also, the number of votes is skewed as well.
+
+
+```{r}
+p = zomato_nd_predict%>%
+  select_if(is.numeric) %>%
+  filter(Aggregate.rating>2,Average.Cost.for.two<2000) %>%
+  mutate(Average.Cost.for.two=log(Average.Cost.for.two+0.001),Votes=log(Votes)) %>%
+  tidyr::gather(type,value,1:4) %>%
+  ggplot(aes(x=value))+geom_histogram()+facet_grid(~type,scales = 'free')
+
+ggsave(p,'variable_dustributions_number_of_votes_3.png')
+
+
+```
+
+We see much more improvement in the normality of the variables.
+
+
+We apply these transformations to the original data set and look for the amount of data that we have lost.
+
+
+
+```{r}
+
+
+
+zomato_nd_predict_new <- zomato_nd_predict %>%
+  filter(Aggregate.rating>2,Average.Cost.for.two<2000) %>%
+  mutate(Average.Cost.for.two=log(Average.Cost.for.two+0.001),Votes=log(Votes))
+
+
+print(1-(nrow(zomato_nd_predict_new)/nrow(zomato_nd_predict)))
+
+
+```
+We have lost about 30% of the data to build our regression model.
+
+
+## Simple linear regression model
+
+
+```{r}
+train <- sample(1:nrow(zomato_nd_predict_new),nrow(zomato_nd_predict_new)*(3/4))
+lm1 <- lm(Votes~.,data=zomato_nd_predict_new[train,])
+summary(lm1)
+
+test_data <- zomato_nd_predict_new[-train,]
+test_data <- test_data %>% select(-Votes)
+
+prediction_lm <- predict(lm1,test_data)
+mean((zomato_nd_predict_new[-train,]$Votes-prediction_lm)^2)
+
+
+
+
+```
+
+From the above results, we find that the simple linear model explains around 48% of variance in the data. This is a fairly poor model. One way to improve this situation is to use ensemble learning methods like random forests. The RMSE for the test data is around `r mean((zomato_nd_predict_new[-train,]$Votes-prediction_lm)^2)`.
+
+
+
+## Random Forest
+
+A random forest is a supervised machine learning algorithm. As the same suggests, this algorithm builds an ensemble of decision trees and takes the average of the predictions of all these trees. This is averaging of the predcitions of many models is called `bagging`. The random forest in each iteration, finds the best feature from a randomly selected set of features.
+
+Here, we will be using the `caret` package to build our model. This package allows us to conduct cross validation using a few lines of code.
+
+The random forest algorithm follows a standard recursive partitioning algorithm that performs splits in each tree by choosing a random `mtry` variables from the given set of variables. In each split, this algorithm chooses a different set of `mtry` variables. Here we choose `mtry` to be the squared root of the number of features available.
+
+
+```{r}
+
+library(caret)
+control <- trainControl(method="repeatedcv", number=10, repeats=3)
+seed <- 7
+metric <- "RMSE"
+set.seed(seed)
+mtry <- round(zomato_nd_predict_new %>% ncol() %>% sqrt())
+tunegrid <- expand.grid(.mtry=mtry)
+rf_default <- train(Votes~., data=zomato_nd_predict_new, method="rf", metric="RMSE", tuneGrid=tunegrid, 
+                    trControl=control)
+print(rf_default)
+
+```
+
+The R squared metric seems to have improved a little.In this section, we have done a 10 fold cross validation 3 times. The original data is randomly partitioned into 10 equal sized subsamples. One subsample is chosen as the validation data for testing the model and the remaining are used as the training data.This process is then repeated 3 times. These 3 results are then used to produce the final estimation. This technique will allow us to assess the performance of the model on a more generalized data.
+
+
+
+### Parameters in the random forest
+
+We have only introduced one parameter in the randomforest. That's the `mtry` parameter. The other one is the `ntree`.This is the number of trees to grow. A larger number of trees produces more stable models, but require more memory and a longer run time.
+To choose the optimal `mtry` and `ntree` parameters, we will use a custom modeling function. This modeling function was defined in [this post in Machine Learning Mastery](https://machinelearningmastery.com/tune-machine-learning-algorithms-in-r/)
+
+```{r}
+library(randomForest)
+customRF <- list(type = "Regression", library = "randomForest", loop = NULL)
+customRF$parameters <- data.frame(parameter = c("mtry", "ntree"), class = rep("numeric", 2), label = c("mtry", "ntree"))
+customRF$grid <- function(x, y, len = NULL, search = "grid") {}
+customRF$fit <- function(x, y, wts, param, lev, last, weights, classProbs, ...) {
+  randomForest(x, y, mtry = param$mtry, ntree=param$ntree, ...)
+}
+customRF$predict <- function(modelFit, newdata, preProc = NULL, submodels = NULL)
+   predict(modelFit, newdata)
+
+customRF$prob <- function(modelFit, newdata, preProc = NULL, submodels = NULL)
+   predict(modelFit, newdata, type = "prob")
+customRF$sort <- function(x) x[order(x[,1]),]
+customRF$levels <- function(x) x$classes
+
+
+```
+
+After this definition, we then apply the function to the caret train module. We will choose different  `ntree` and `mtry`  and iterate through these.
+
+```{r}
+
+control <- trainControl(method="repeatedcv", number=10, repeats=3)
+tunegrid <- expand.grid(.mtry=c(1:6), .ntree=c(100,200,500,1000,1100,1500,2000))
+set.seed(seed)
+custom <- train(Votes~., data=zomato_nd_predict_new, method=customRF, metric=metric, tuneGrid=tunegrid, trControl=control)
+custom$bestTune
+
+
+
+```
+
+This process does take some time. The optimal `mtry` here is `r custom$bestTune$mtry` and the optimal number of trees is `r custom$bestTune$ntree`.
+
+
+
+## Saving the Model
+
+After we have created the optimal random forest model, we can save it as an `RDS` for future use without going through the entire process again. The model can be loaded again using the `read.RDS` function.
+
+
+```{r}
+saveRDS(custom, file="delhi_votes.rds")
+model <-readRDS("delhi_votes.rds")
+
+
+
+```
+
+After we have read this model, let's try do apply this model to the training set.
+
+## Mean Squared Error with the training set
+
+Now that we have the model, we can compare the RMSE of the random forest model, with the RMSE for the linear model.
+
+
+```{r}
+
+
+
+prediction <- predict(model,test_data)
+
+mean((zomato_nd_predict_new[-train,]$Votes-prediction)^2)
+
+```
+
+
+The RMSE has reduced a lot from `r mean((zomato_nd_predict_new[-train,]$Votes-prediction_lm)^2)` to `r mean((zomato_nd_predict_new[-train,]$Votes-prediction)^2)`: a ~40% decrease!
+
+## Libraries and their versions
+
+```{r}
+sessionInfo()
+
+```
+
+## Resources
+
+[Machine Learning Mastery](https://machinelearningmastery.com/tune-machine-learning-algorithms-in-r/)
+
+[Medium Article on Random Forests](https://towardsdatascience.com/the-random-forest-algorithm-d457d499ffcd)
